@@ -1,0 +1,4 @@
+anthropic>=1.17.0
+pydantic>=2
+flask>=3
+gunicorn>=23; sys_platform != "win32"

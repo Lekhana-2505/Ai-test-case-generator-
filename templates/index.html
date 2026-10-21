@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Test Case Generator</title>
+<style>
+  :root { --bg:#f7f7f8; --card:#fff; --text:#1d1d1f; --muted:#6b6b73; --border:#e2e2e6; --accent:#4b5bdc;
+          --high:#c0392b; --medium:#c58a00; --low:#2e8b57; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141416; --card:#1e1e22; --text:#ececf0; --muted:#9a9aa3; --border:#33333a; --accent:#8c98ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px; }
+  textarea { width:100%; min-height:180px; font:13px/1.45 ui-monospace, Consolas, monospace; padding:10px;
+             border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text); resize:vertical; }
+  .row { display:flex; flex-wrap:wrap; gap:16px; margin-top:12px; align-items:end; }
+  label { font-size:13px; color:var(--muted); display:block; }
+  input, select { padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); }
+  .cats label { display:inline-flex; gap:4px; align-items:center; margin-right:10px; color:var(--text); font-size:14px; }
+  button { padding:8px 16px; border:0; border-radius:6px; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
+  button.secondary { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+  button:disabled { opacity:.5; cursor:wait; }
+  .error { color: var(--high); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; }
+  td ol, td ul { margin:0; padding-left:18px; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; border:1px solid var(--border); }
+  .p-high { color:var(--high); } .p-medium { color:var(--medium); } .p-low { color:var(--low); }
+  pre { overflow:auto; background:var(--bg); padding:12px; border-radius:8px; font-size:13px; }
+  .table-wrap { overflow-x:auto; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AI Test Case Generator</h1>
+  <p class="sub">Paste a requirement, user story, API spec or source code. Claude designs the test cases.</p>
+
+  <div class="card">
+    <textarea id="source" placeholder="e.g. Users can reset their password via an emailed link that expires after 30 minutes. Passwords must be 8-64 characters with at least one number."></textarea>
+    <div class="row">
+      <div class="cats">
+        <label style="display:block;color:var(--muted);font-size:13px;margin-bottom:4px">Categories</label>
+        <span id="cats"></span>
+      </div>
+    </div>
+    <div class="row">
+      <div><label for="count">Number of cases</label><input id="count" type="number" min="1" max="50" value="10" style="width:80px"></div>
+      <div><label for="framework">Automation framework (optional)</label>
+        <input id="framework" list="fw" placeholder="none" style="width:170px">
+        <datalist id="fw"><option>pytest</option><option>unittest</option><option>jest</option><option>junit 5</option><option>playwright</option><option>cypress</option><option>selenium (python)</option></datalist></div>
+      <div><label for="effort">Effort</label>
+        <select id="effort"><option>low</option><option selected>medium</option><option>high</option><option>xhigh</option></select></div>
+      <button id="go">Generate</button>
+      <span id="status"></span>
+    </div>
+  </div>
+
+  <div id="results" class="hidden">
+    <div class="card">
+      <p id="summary"></p>
+      <div id="assumptions"></div>
+      <div class="row" style="margin-top:0">
+        <button class="secondary" data-fmt="csv">Download CSV</button>
+        <button class="secondary" data-fmt="md">Download Markdown</button>
+        <button class="secondary" data-fmt="json">Download JSON</button>
+      </div>
+    </div>
+    <div class="card table-wrap"><table>
+      <thead><tr><th>ID</th><th>Title</th><th>Type</th><th>Steps</th><th>Test data</th><th>Expected</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+    <div class="card hidden" id="codeCard"><h3 style="margin-top:0">Automated tests</h3>
+      <button class="secondary" id="copy">Copy code</button><pre id="code"></pre></div>
+  </div>
+</main>
+<script>
+const CATS = ["positive","negative","edge","boundary","security","performance","usability"];
+const DEFAULT = ["positive","negative","edge","boundary"];
+document.getElementById("cats").innerHTML = CATS.map(c =>
+  `<label><input type="checkbox" value="${c}" ${DEFAULT.includes(c) ? "checked" : ""}>${c}</label>`).join("");
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let suite = null;
+
+$("go").onclick = async () => {
+  const btn = $("go"), status = $("status");
+  btn.disabled = true; status.className = ""; status.textContent = "Generating... this can take a minute.";
+  try {
+    const res = await fetch("/api/generate", { method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        source: $("source").value,
+        categories: [...document.querySelectorAll("#cats input:checked")].map(i => i.value),
+        count: +$("count").value, framework: $("framework").value, effort: $("effort").value })});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Request failed");
+    suite = data; render(); status.textContent = `${data.test_cases.length} test cases generated.`;
+  } catch (e) { status.className = "error"; status.textContent = e.message; }
+  finally { btn.disabled = false; }
+};
+
+function render() {
+  $("results").classList.remove("hidden");
+  $("summary").textContent = suite.summary;
+  $("assumptions").innerHTML = suite.assumptions.length
+    ? "<strong>Assumptions</strong><ul>" + suite.assumptions.map(a => `<li>${esc(a)}</li>`).join("") + "</ul>" : "";
+  $("rows").innerHTML = suite.test_cases.map(tc => `<tr>
+    <td>${esc(tc.id)}</td>
+    <td><strong>${esc(tc.title)}</strong>${tc.preconditions.length ? "<br><small>Pre: " + tc.preconditions.map(esc).join("; ") + "</small>" : ""}</td>
+    <td><span class="tag">${esc(tc.category)}</span><br><small class="p-${tc.priority}">${esc(tc.priority)}</small></td>
+    <td><ol>${tc.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ol></td>
+    <td>${esc(tc.test_data)}</td>
+    <td>${esc(tc.expected_result)}</td></tr>`).join("");
+  $("codeCard").classList.toggle("hidden", !suite.test_code);
+  $("code").textContent = suite.test_code;
+}
+
+document.querySelectorAll("[data-fmt]").forEach(b => b.onclick = async () => {
+  const fmt = b.dataset.fmt;
+  const res = await fetch(`/api/export/${fmt}`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(suite) });
+  const url = URL.createObjectURL(new Blob([await res.text()], { type: "text/plain" }));
+  Object.assign(document.createElement("a"), { href: url, download: `test_cases.${fmt}` }).click();
+  URL.revokeObjectURL(url);
+});
+$("copy").onclick = () => navigator.clipboard.writeText(suite.test_code);
+</script>
+</body>
+</html>
